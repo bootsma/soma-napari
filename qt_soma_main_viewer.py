@@ -3,13 +3,20 @@ import numpy as np
 import napari
 from PyQt6.QtWidgets import QLabel
 from napari.layers import Labels, Image
-from napari.utils.events import Event
+
+from napari._qt.dialogs.qt_activity_dialog import QtActivityDialog
+from napari._qt.widgets.qt_viewer_status_bar import ViewerStatusBar
+from napari._qt.threads.status_checker import StatusChecker
+
 
 from qtpy.QtWidgets import (
     QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QSplitter, QHBoxLayout, QFileDialog, QAction
+    QVBoxLayout, QSplitter, QFileDialog, QAction
 )
 from qtpy.QtCore import Qt
+
+from qt_label_info_widget import LabelInfoWidget
+from qt_theme_utils import copy_custom_ui_icons, customize_stylesheet
 
 # --- Import your custom buttons if available ---
 try:
@@ -55,19 +62,6 @@ class MedicalMainWindow(QMainWindow):
 
         self._blk_active = Blocker()
 
-        self._blk_mode = Blocker()
-        self._blk_visibility = Blocker()
-        self._blk_blending = Blocker()
-        self._blk_affine = Blocker()
-
-        self._blk_colormap = Blocker()
-        self._blk_brush = Blocker()
-        self._blk_n_edit_dimensions = Blocker()
-        self._blk_selected_label = Blocker()
-        self._blk_show_sel_label = Blocker()
-
-
-        # --- 1. Initialize Viewers ---
         # We use the Axial viewer as the "Master" logic engine
         self.v_axial = napari.Viewer(title="Axial", show=False)
         self.v_coronal = napari.Viewer(title="Coronal", show=False)
@@ -76,14 +70,32 @@ class MedicalMainWindow(QMainWindow):
 
         self.viewers = [self.v_axial, self.v_coronal, self.v_sagittal, self.v_3d]
 
-        # --- 2. Build UI (Menus & Layout) ---
+        target_widget = self.v_axial.window._qt_viewer._welcome_widget
+        self._activity_dialog = QtActivityDialog(target_widget)
+        self._activity_dialog.hide()
+
+        # Keep the dialog positioned correctly when the window resizes
+        target_widget.resized.connect(self._activity_dialog.move_to_bottom_right)
+
+        # Setup Status Bar
+        self.status_bar = ViewerStatusBar(self)
+        self.setStatusBar(self.status_bar)
+
+        # Keep track of status checker threads
+        self.status_checkers = []
+
+        # Connect listeners (as defined in the previous answer)
+        for viewer in self.viewers:
+            self._attach_status_management(viewer)
+
+        self._create_and_add_data()
+        self._setup_camera_orientations()
+
+        # ---  Setup Data ---
         self._setup_menus()
         self._build_layout()
 
-        # --- 3. Setup Data ---
-        self._create_and_add_data()
-
-        # --- 4. Setup Synchronization ---
+        #  Setup Synchronization ---
         self._link_viewers_layer_list()
         self._link_viewer_tools()
         self._sync_active_selection()
@@ -93,17 +105,60 @@ class MedicalMainWindow(QMainWindow):
         if label_layers:
             self._link_label_painting(label_layers)
 
-        # --- 5. Configure Cameras ---
-        self._setup_camera_orientations()
-
-        # --- 6. UI Tweaks (Disable Transform) ---
+        #  UI Tweaks (Disable Transform) ---
         # We connect this LAST so it triggers on initial selection
         self.v_axial.layers.selection.events.active.connect(self._disable_transform_tool)
         self._disable_transform_tool(None) # Trigger once manually
 
+
+    def _attach_status_management(self, viewer):
+        """
+        Creates a StatusChecker thread for a viewer and links
+        events to the main window's status bar.
+        """
+        # A. Create the background thread
+        checker = StatusChecker(viewer, parent=self)
+        self.status_checkers.append(checker)
+
+        # B. Define what happens when the checker finishes a calculation
+        def apply_status_to_viewer(status_info):
+
+            if status_info is None:
+                return  # Do nothing (or clear status) if signal is empty
+
+            # status_info is a tuple: (status_text, tooltip_text)
+            viewer.status = status_info[0]
+            viewer.tooltip.text = status_info[1]
+
+        checker.status_and_tooltip_changed.connect(apply_status_to_viewer)
+
+        # ... (Rest of the function remains the same) ...
+        checker.status_and_tooltip_changed.connect(apply_status_to_viewer)
+        viewer.cursor.events.position.connect(checker.trigger_status_update)
+        viewer.events.status.connect(self._on_status_changed)
+        viewer.events.help.connect(lambda e: self.status_bar.setHelpText(e.value))
+        checker.start()
+
+    def _on_status_changed(self, event):
+        """Handle status updates from any viewer."""
+        # Napari sends either a simple string or a dictionary of coordinate info
+        if isinstance(event.value, str):
+            self.status_bar.setStatusText(event.value)
+        else:
+            # Complex object (coordinates, layer values, etc)
+            status_info = event.value
+            self.status_bar.setStatusText(
+                layer_base=status_info.get('layer_base'),
+                source_type=status_info.get('source_type'),
+                plugin=status_info.get('plugin'),
+                coordinates=status_info.get('coordinates')
+            )
     # -------------------------------------------------------------------------
     # GUI Construction
     # -------------------------------------------------------------------------
+
+
+
 
     def _setup_menus(self):
         """Creates a standard File/View menu bar."""
@@ -142,9 +197,6 @@ class MedicalMainWindow(QMainWindow):
 
     def _build_layout(self):
         """Constructs the 4-panel layout with sidebar."""
-
-
-
         # -- Viewports --
         if HAS_VIEWPORT:
             vp_ax = QtViewport(self.v_axial, "Axial (Z)", leave_controls=True)
@@ -192,8 +244,14 @@ class MedicalMainWindow(QMainWindow):
         side_layout = QVBoxLayout()
         side_layout.setContentsMargins(5, 5, 5, 5)
 
-        # Add the extracted widgets
+
+        # --- NEW CODE START ---
+        # Create and add your info widget
+        self.label_info_widget = LabelInfoWidget(self.v_axial)
+
+        # Placing it between controls and layer list often looks best.
         side_layout.addWidget(dock_controls)
+        side_layout.addWidget(self.label_info_widget)
         side_layout.addWidget(dock_layers)
         sidebar.setLayout(side_layout)
 
@@ -239,12 +297,29 @@ class MedicalMainWindow(QMainWindow):
         dims = (128, 128, 128)
         image_vol = np.random.rand(*dims).astype(np.float32)
         label_vol = np.zeros(dims, dtype=np.int32)
+
+        # Define some label indices
         c = 64
-        label_vol[c-10:c+10, c-10:c+10, c-10:c+10] = 1
+        label_vol[c-10:c+10, c-10:c+10, c-10:c+10] = 1 # Label 1
+        label_vol[c-20:c-15, c-20:c-15, c-20:c-15] = 2 # Label 2
+
+        # Define properties mapping
+        # Ensure the 'label' list matches the integer values in label_vol
+        label_properties = {
+            'label': [1, 2],
+            'name': ['Tumor Core', 'Edema']
+        }
 
         for v in self.viewers:
             v.add_image(image_vol, name="Volume", colormap="gray", contrast_limits=[0, 1])
-            v.add_labels(label_vol, name="Labels", opacity=0.6)
+
+            # Add labels with properties
+            lbl_layer = v.add_labels(
+                label_vol,
+                name="Labels",
+                opacity=0.6,
+                properties=label_properties # Pass the dictionary here
+            )
 
     def _setup_camera_orientations(self):
         center = (64, 64, 64)
@@ -312,138 +387,118 @@ class MedicalMainWindow(QMainWindow):
             v.layers.selection.events.active.connect(on_active_change)
 
     def _link_viewer_tools(self):
-        sync_layer_funcs = []
-        sync_label_funcs = []
+        from functools import partial
 
+        # 1. Configuration: Define what to sync
+        # Format: 'attribute_name' (assumes event name is same as attribute name)
+        # If event name differs, we could use a tuple, but Napari is usually consistent.
 
-        @self._blk_mode
-        def sync_mode(event:Event):
-            source_layer = event.source
-            mode = source_layer.mode
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.visible != mode:
-                        corresponding_layer.mode = mode
-                except KeyError:
-                    pass
+        # Attributes common to all Layers
+        base_attributes = [
+            'mode',
+            'visible',
+            'blending',
+            'affine',
+            'opacity' # Added opacity as it's commonly needed
+        ]
 
+        image_attributes = [
+            'contrast_limits',
+            'gamma',
+            'interpolation2d',
+            'interpolation3d',
+            'colormap'
+        ]
 
-        @self._blk_visibility
-        def sync_visibility(event:Event):
-            source_layer = event.source
-            visible = source_layer.visible
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.visible != visible:
-                        corresponding_layer.blending = visible
-                except KeyError:
-                    pass
+        # Attributes specific to Labels layers
+        label_attributes = [
+            'colormap',
+            'brush_size',
+            'n_edit_dimensions',
+            'show_selected_label',
+            'selected_label',
+            'contour', # Example of how easy it is to add new props
+            'preserve_labels'
+        ]
 
-        @self._blk_blending
-        def sync_blending(event:Event):
-            source_layer = event.source
-            blending = source_layer.blending
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.blending != blending:
-                        corresponding_layer.blending = blending
-                except KeyError:
-                    pass
+        # 2. State tracking to prevent infinite recursion
+        # We replace the explicit @Blocker decorators with a set of active keys.
+        self._active_sync_keys = set()
 
-        @self._blk_affine
-        def sync_affine(event:Event):
-            source_layer = event.source
-            affine = source_layer.affine
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.affine != affine:
-                        corresponding_layer.affine = affine
-                except KeyError:
-                    pass
+        # 3. The Generic Sync Handler
+        def _sync_attribute(event, attr_name):
+            # Create a unique key for this attribute to prevent recursion
+            # We use attr_name so syncing 'opacity' doesn't block syncing 'brush_size'
+            if attr_name in self._active_sync_keys:
+                return
 
-        @self._blk_colormap
-        def sync_colormap(event:Event):
-            source_layer = event.source
-            colormap = source_layer.colormap
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.colormap != colormap:
-                        corresponding_layer.colormap = colormap
-                except KeyError:
-                    pass
+            self._active_sync_keys.add(attr_name)
+            try:
+                source_layer = event.source
 
-        @self._blk_brush
-        def sync_brush(event):
-            """Syncs the brush size across all viewers."""
-            source_layer = event.source
-            new_size = source_layer.brush_size
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.brush_size != new_size:
-                        corresponding_layer.brush_size = new_size
-                except KeyError:
-                    pass
+                # Get the value dynamically
+                # We use getattr ensure we have the current state,
+                # though event.value often holds it.
+                new_value = getattr(source_layer, attr_name)
 
-        @self._blk_n_edit_dimensions
-        def sync_n_edit_dimensions(event:Event):
-            source_layer = event.source
-            n_edit_dimensions = source_layer.n_edit_dimensions
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.n_edit_dimensions != n_edit_dimensions:
-                        corresponding_layer.n_edit_dimensions = n_edit_dimensions
-                except KeyError:
-                    pass
+                for v in self.viewers:
+                    # Skip if the layer doesn't exist in this viewer
+                    if source_layer.name not in v.layers:
+                        continue
 
-        @self._blk_selected_label
-        def sync_selected_label(event: Event):
-            """Syncs the selected label ID across all viewers."""
-            source_layer = event.source
-            new_label = source_layer.selected_label
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.selected_label != new_label:
-                        corresponding_layer.selected_label = new_label
-                except KeyError:
-                    pass
+                    target_layer = v.layers[source_layer.name]
 
+                    # Optimization: Only write if values differ
+                    # This also acts as a secondary recursion guard
+                    current_value = getattr(target_layer, attr_name)
 
-        @self._blk_show_sel_label
-        def sync_show_selected_label(event:Event):
-            source_layer = event.source
-            show_selected_label = source_layer.show_selected_label
-            for v in self.viewers:
-                try:
-                    corresponding_layer = v.layers[source_layer.name]
-                    if corresponding_layer and corresponding_layer.show_selected_label != show_selected_label:
-                        corresponding_layer.show_selected_label = show_selected_label
-                except KeyError:
-                    pass
+                    # Handle numpy array comparisons if necessary, otherwise standard equality
+                    are_different = False
+                    if isinstance(new_value, np.ndarray):
+                        are_different = not np.array_equal(new_value, current_value)
+                    else:
+                        are_different = new_value != current_value
 
+                    if are_different:
+                        setattr(target_layer, attr_name, new_value)
+
+            except AttributeError:
+                # Handle cases where a layer might not have the attribute
+                pass
+            except KeyError:
+                pass
+            finally:
+                self._active_sync_keys.remove(attr_name)
+
+        # 4. Connection Helper
         def connect_layer(layer):
-            layer.events.mode.connect(sync_mode)
-            layer.events.visible.connect(sync_visibility)
-            layer.events.blending.connect(sync_blending)
-            layer.events.affine.connect(sync_affine)
+            # Connect Base Attributes
+            for attr in base_attributes:
+                if hasattr(layer.events, attr):
+                    # We use partial to pass the specific attr_name to the generic function
+                    getattr(layer.events, attr).connect(
+                        partial(_sync_attribute, attr_name=attr)
+                    )
 
+            # Connect Label Specific Attributes
             if isinstance(layer, Labels):
-                layer.events.colormap.connect(sync_colormap)
-                layer.events.brush_size.connect(sync_brush)
-                layer.events.n_edit_dimensions.connect(sync_n_edit_dimensions)
-                layer.events.show_selected_label.connect(sync_show_selected_label)
-                layer.events.selected_label.connect(sync_selected_label)
+                for attr in label_attributes:
+                    if hasattr(layer.events, attr):
+                        getattr(layer.events, attr).connect(
+                            partial(_sync_attribute, attr_name=attr)
+                        )
+            elif isinstance(layer, Image):
+                for attr in image_attributes:
+                    if hasattr(layer.events, attr):
+                        getattr(layer.events, attr).connect(
+                            partial(_sync_attribute, attr_name=attr)
+                        )
 
+        # 5. Apply to existing and future layers
         for v in self.viewers:
             for layer in v.layers:
                 connect_layer(layer)
+            # Connect newly inserted layers automatically
             v.layers.events.inserted.connect(lambda e: connect_layer(e.value))
 
 
@@ -499,21 +554,27 @@ class MedicalMainWindow(QMainWindow):
             layer.redo = synced_redo
 
     def closeEvent(self, event):
+
+        for checker in self.status_checkers:
+            checker.close_terminate()
+            checker.wait()
+
         for v in self.viewers:
             v.close()
         super().closeEvent(event)
 
-# =============================================================================
-# 3. Entry Point
-# =============================================================================
+
+
+
 
 if __name__ == "__main__":
+
+    copy_custom_ui_icons()
     app = QApplication.instance() or QApplication(sys.argv)
-    from napari.utils.theme import get_theme
-    from napari._qt.qt_resources import get_stylesheet
-    theme = get_theme("dark")
-    app.setStyleSheet(get_stylesheet(theme.id))
 
     window = MedicalMainWindow()
+    customize_stylesheet(app)
+
+
     window.show()
     sys.exit(app.exec_())

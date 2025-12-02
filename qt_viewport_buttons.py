@@ -135,7 +135,7 @@ class QtViewportButtons(QFrame):
         adb.setChecked(viewer.axes.visible)
         #db.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         #adb.customContextMenuRequested.connect(self._display_axes)
-
+        """
         @self.viewer._overlays.events.added.connect
         def _a(event):
             print('a',event)
@@ -144,7 +144,7 @@ class QtViewportButtons(QFrame):
         @self.viewer._overlays.events.removed.connect
         def _B(event):
             print('b',event)
-
+        """
         self.view_type = QLabel('AXIAL')
         self.view_type.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
