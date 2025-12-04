@@ -137,7 +137,7 @@ def get_unique_series_uids(root_directory):
                 if 'SeriesInstanceUID' in dcm_data:
                     unique_uids.add(dcm_data.SeriesInstanceUID)
 
-            except (InvalidDicomError, TypeError, OSError):
+            except ( TypeError, OSError):
                 # Skip files that are not valid DICOMs (e.g., .txt, .jpg, or corrupted files)
                 continue
 

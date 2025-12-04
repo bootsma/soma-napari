@@ -1,5 +1,33 @@
 import napari
+from PyQt6.QtWidgets import (
+    QPushButton
+)
 
+try:
+    from napari.utils.theme import get_theme
+    from napari._qt.qt_resources import get_stylesheet
+    from napari._qt.widgets.qt_viewer_buttons import (
+        QtViewerPushButton
+    )
+    from napari.utils.translations import trans
+    NAPARI_AVAILABLE = True
+except ImportError:
+    NAPARI_AVAILABLE = False
+    print("Napari not found. Using default Qt theme.")
+
+
+def make_button(button_name:str, tooltip:str, callback:callable):
+    btn = None
+    if NAPARI_AVAILABLE:
+        btn= QtViewerPushButton(
+            button_name,
+            tooltip=trans._(tooltip),
+            slot=callback
+        )
+    else:
+        btn = QPushButton("Browse")
+        btn.clicked.connect(callback)
+    return btn
 
 def copy_custom_ui_icons():
 
@@ -80,7 +108,11 @@ def customize_ui_old(app):
     # Note: We use the prefix 'theme_dark:' which now contains your copied file
     my_buttons = ("\n\nQtViewerPushButton[mode=\"coordinate_axes\"] { "
                   "\n    image: url(\"theme_dark:/coordinate_axes.svg\");"
-                  "\n}\n")
+                  "\n}\n"
+                  "\n\nQtViewerPushButton[mode=\"folder\"] { "
+                  "\n    image: url(\"theme_dark:/folder.svg\");"
+                  "\n}\n"
+                  )
     stylesheet += my_buttons
 
     app.setStyleSheet(stylesheet)
