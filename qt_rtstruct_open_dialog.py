@@ -1,15 +1,18 @@
 import sys
 import numpy as np
-from typing import TypedDict
+import pydicom
+from typing import TypedDict, List, Dict
 
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6 import QtCore
+from PyQt6.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
+    QLabel, QLineEdit, QPushButton, QFileDialog, QWidget, QTextEdit,
+    QPlainTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
+    QMessageBox
+)
 
 from mira_core.dicom_utils import get_ref_image_series_uid, get_unique_series_uids, get_rtstruct_roi_names
 from pydicom.errors import InvalidDicomError
-from PyQt6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QFileDialog, QWidget, QTextEdit, QPlainTextEdit
-)
 
 from qt_theme_utils import (
     copy_custom_ui_icons, customize_stylesheet,
@@ -17,21 +20,14 @@ from qt_theme_utils import (
 )
 
 # --- Napari Theme Imports ---
-# Importing these modules triggers the build of built-in themes
-# and registers the 'theme_dark:/' Qt resource paths.
-"""
-try:
-    from napari.utils.theme import get_theme
-    from napari._qt.qt_resources import get_stylesheet
-    from napari._qt.widgets.qt_viewer_buttons import (
-        QtViewerPushButton
-    )
-    from napari.utils.translations import trans
-    NAPARI_AVAILABLE = True
-except ImportError:
-    NAPARI_AVAILABLE = False
-    print("Napari not found. Using default Qt theme.")
-"""
+if NAPARI_AVAILABLE:
+    try:
+        from napari.utils.theme import get_theme
+        from napari._qt.qt_resources import get_stylesheet
+    except ImportError:
+        pass
+
+# --- Types & Constants ---
 
 class DICOMRTStructData(TypedDict):
     dicom_rtstruct_file: str
@@ -47,65 +43,206 @@ DEFAULT_ROI_FILTER ={
         {
             'name':'Bladder',
             'index':1,
-            'include_keys':[
-                'bladder'
-            ],
-            'exclude_keys':[
-            ]
+            'include_keys':['bladder'],
+            'exclude_keys':[]
         },
         {
             'name':'Rectum',
             'index':2,
-            'include_keys':[
-                'rectum'
-            ]
+            'include_keys':['rectum']
         },
         {
             'name':'Sigmoid',
             'index':4,
-            'include_keys':[
-                'sigmoid'
-            ]
+            'include_keys':['sigmoid']
         },
         {
             'name':'SmallBowel',
             'index':3,
-            'include_keys':[
-                'smallbowel',
-                'bowel'
-            ]
+            'include_keys':['smallbowel', 'bowel']
         },
-
     ],
-    'global_exclude':[
-        'fake',
-        'inside'
-    ]
-
+    'global_exclude':['fake', 'inside']
 }
-
-
-fasdf
 
 class ProcessingWindow(QDialog):
     """
-    Placeholder for the window that opens after 'Next' is clicked.
-    We will write the detailed code for this later.
+    Step 2: ROI Mapping and Metadata Verification.
     """
-    def __init__(self, dicom_data:DICOMRTStructData, filter:dict=None):
+    def __init__(self, dicom_data: DICOMRTStructData, filter_config: dict = None):
         super().__init__()
-        if not filter:
-            filter = DEFAULT_ROI_FILTER
+        self.setWindowTitle("ROI Assignment")
+        self.resize(800, 600)
 
+        self.dicom_data = dicom_data
+        self.filter_config = filter_config or DEFAULT_ROI_FILTER
+        self.available_rois = sorted(dicom_data.get('roi_list', []))
+        self.combo_refs: List[QComboBox] = []
+        self.current_assignments: List[str] = [] # Tracks text in each row to enable swapping
 
+        self.setup_ui()
+        self.load_patient_data()
+        self.populate_table()
 
-        self.setWindowTitle("Processing Window")
-        self.resize(400, 300)
-
+    def setup_ui(self):
         layout = QVBoxLayout()
-        label = QLabel("This is the next window.\n(Logic to be implemented later)")
-        layout.addWidget(label)
+
+        # --- 1. Patient Information Group ---
+        self.info_group = QGroupBox("Patient Information")
+        self.info_layout = QFormLayout()
+
+        # Labels for data (to be populated later)
+        self.lbl_name = QLabel("Loading...")
+        self.lbl_id = QLabel("Loading...")
+        self.lbl_date = QLabel("Loading...")
+
+        self.info_layout.addRow("Patient Name:", self.lbl_name)
+        self.info_layout.addRow("Patient ID:", self.lbl_id)
+        self.info_layout.addRow("Study Date:", self.lbl_date)
+
+        self.info_group.setLayout(self.info_layout)
+        layout.addWidget(self.info_group)
+
+        # --- 2. ROI Mapping Table ---
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Target Structure", "DICOM Contour"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        layout.addWidget(self.table)
+
+        # --- 3. Action Buttons ---
+        btn_layout = QHBoxLayout()
+
+        self.btn_back = QPushButton("Back")
+        self.btn_back.setFixedWidth(100)
+        self.btn_back.clicked.connect(self.reject) # Reject closes dialog with "Rejected" code
+
+        self.btn_process = QPushButton("Process")
+        self.btn_process.setFixedWidth(100)
+        self.btn_process.clicked.connect(self.accept) # Accept closes dialog with "Accepted" code
+
+        btn_layout.addWidget(self.btn_back)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_process)
+
+        layout.addLayout(btn_layout)
         self.setLayout(layout)
+
+    def load_patient_data(self):
+        """Reads the DICOM file to extract patient metadata."""
+        path = self.dicom_data.get('dicom_rtstruct_file')
+        if not path:
+            return
+
+        try:
+            # Read only header data, stop before pixel data (though RTStructs often don't have pixel data)
+            ds = pydicom.dcmread(path, stop_before_pixels=True)
+
+            # Helper to safely get string
+            def get_val(tag, default="N/A"):
+                val = getattr(ds, tag, default)
+                return str(val) if val else default
+
+            name = get_val('PatientName')
+            # Format name nicely if possible (Doe^John -> John Doe)
+            if '^' in name:
+                parts = name.split('^')
+                name = f"{parts[1]} {parts[0]}" if len(parts) > 1 else parts[0]
+
+            self.lbl_name.setText(name)
+            self.lbl_id.setText(get_val('PatientID'))
+
+            date = get_val('StudyDate')
+            # Simple date formatting YYYYMMDD -> YYYY-MM-DD
+            if len(date) == 8:
+                date = f"{date[0:4]}-{date[4:6]}-{date[6:8]}"
+            self.lbl_date.setText(date)
+
+        except Exception as e:
+            self.lbl_name.setText("Error reading DICOM")
+            print(f"Error reading patient info: {e}")
+
+    def populate_table(self):
+        """Creates table rows based on the filter config."""
+        targets = self.filter_config.get('rois', [])
+        self.table.setRowCount(len(targets))
+
+        self.combo_refs = []
+        self.current_assignments = []
+
+        options = ["(Unassigned)"] + self.available_rois
+
+        for row, target in enumerate(targets):
+            # Column 0: Target Name
+            name_item = QTableWidgetItem(target.get('name', 'Unknown'))
+            name_item.setFlags(name_item.flags() ^ QtCore.Qt.ItemFlag.ItemIsEditable) # Read-only
+            self.table.setItem(row, 0, name_item)
+
+            # Column 1: ComboBox
+            combo = QComboBox()
+            combo.addItems(options)
+
+            # --- Logic to find best match ---
+            best_match = "(Unassigned)"
+            include_keys = target.get('include_keys', [])
+
+            # Search available ROIs for keywords
+            for roi in self.available_rois:
+                roi_lower = roi.lower()
+                # Check for exact matches inside the ROI name
+                if any(k.lower() in roi_lower for k in include_keys):
+                    # Basic exclusion check
+                    global_exclude = self.filter_config.get('global_exclude', [])
+                    if not any(ex.lower() in roi_lower for ex in global_exclude):
+                        best_match = roi
+                        break # Stop at first match
+
+            combo.setCurrentText(best_match)
+
+            # Store initial state
+            self.current_assignments.append(best_match)
+            self.combo_refs.append(combo)
+
+            # Connect signal using a closure to capture the row index
+            # We use lambda row=row: ... to capture the value of row immediately
+            combo.currentTextChanged.connect(lambda text, r=row: self.on_combo_changed(r, text))
+
+            self.table.setCellWidget(row, 1, combo)
+
+    def on_combo_changed(self, changed_row, new_text):
+        """
+        Handles smart swapping.
+        If 'new_text' is already selected in another row, swap the values.
+        """
+        if new_text == "(Unassigned)":
+            self.current_assignments[changed_row] = new_text
+            return
+
+        old_text = self.current_assignments[changed_row]
+
+        # Check if new_text is used elsewhere
+        for other_row, assigned_text in enumerate(self.current_assignments):
+            if other_row == changed_row:
+                continue
+
+            if assigned_text == new_text:
+                # Found a collision! Perform Swap.
+
+                # Update internal state first to prevent recursion logic issues
+                self.current_assignments[changed_row] = new_text
+                self.current_assignments[other_row] = old_text
+
+                # Block signals to update the UI without triggering this function again
+                other_combo = self.combo_refs[other_row]
+                other_combo.blockSignals(True)
+                other_combo.setCurrentText(old_text)
+                other_combo.blockSignals(False)
+                return
+
+        # No collision, just update state
+        self.current_assignments[changed_row] = new_text
 
 
 class SelectionDialog(QDialog):
@@ -159,24 +296,25 @@ class SelectionDialog(QDialog):
 
         self.row3_layout.addWidget(self.btn_next)
 
-
+        # --- Row 4: Status/Log Box ---
         self.row4_layout = QHBoxLayout()
         self.text_box = QPlainTextEdit()
+
+        # Manually styling for dark mode compatibility if Napari theme misses it
         self.text_box.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: #000000;
                 color: #FFFFFF;
                 border-radius: 2px;
+                border: 1px solid #555555;
             }}
             """
-        )
-        
+                                    )
 
         self.text_box.setReadOnly(True)
         self.text_box.setFixedHeight(100)
         self.text_box.setMaximumBlockCount(100)
         self.row4_layout.addWidget(self.text_box)
-
 
         # Add layouts to main
         self.main_layout.addLayout(self.row1_layout)
@@ -210,68 +348,82 @@ class SelectionDialog(QDialog):
             self.txt_dir_path.setText(dir_path)
 
     def check_the_dicom(self, dicom_data:DICOMRTStructData):
-        #open the
         self.text_box.clear()
         self.text_box.appendPlainText("Validating DICOM data...")
         try:
-
             dicom_data["ref_image_series_uid"] = get_ref_image_series_uid(dicom_data['dicom_rtstruct_file'])
-            self.text_box.appendPlainText("Reference Image Series UID: " + dicom_data["ref_image_series_uid"] + "\n")
+            self.text_box.appendPlainText("Reference Image Series UID: " + str(dicom_data["ref_image_series_uid"]) + "\n")
+
             uids = get_unique_series_uids(dicom_data["dicom_image_set_dir"])
             if dicom_data["ref_image_series_uid"] not in uids:
-                self.text_box.appendPlainText("The DICOM RT Reference Image UID is not in the DICOM image set.")
+                self.text_box.appendPlainText("Error: The DICOM RT Reference Image UID is not in the selected DICOM image set directory.")
                 return False
+
             dicom_data["roi_list"] = get_rtstruct_roi_names(dicom_data['dicom_rtstruct_file'])
-            self.text_box.appendPlainText("ROI List: " + str(dicom_data["roi_list"]) + "\n")
+            self.text_box.appendPlainText(f"Found {len(dicom_data['roi_list'])} ROIs.")
 
-        except (InvalidDicomError, TypeError, OSError):
-            self.text_box.appendPlainText(f"The DICOM Data is not valid {e}.")
+        except (InvalidDicomError, TypeError, OSError) as e:
+            self.text_box.appendPlainText(f"Error: The DICOM Data is not valid. {e}")
             return False
-
-
+        except Exception as e:
+            self.text_box.appendPlainText(f"Unexpected Error: {e}")
+            return False
 
         return True
 
-
     def open_next_window(self):
-        """Closes this dialog and opens the next one"""
-        # Optional: Add validation here to ensure paths are selected
+        """
+        Validates inputs, hides current window, and opens the Processing Window.
+        Handles 'Back' navigation by showing this window again if the next one returns 'Rejected'.
+        """
+        # 1. Validation
         if not self.txt_file_path.text() or not self.txt_dir_path.text():
             self.text_box.appendPlainText("Please select both a DICOM file and an output directory.")
             return
 
-        # --- Get the DICOM data ---
+        # 2. Prepare Data
         dicomrt_data = {
             "dicom_rtstruct_file": self.txt_file_path.text(),
             "dicom_image_set_dir": self.txt_dir_path.text(),
-            "dicom_ref_image_series_uid":None,
+            "dicom_ref_image_series_uid": None,
             "roi_list": [],
             "struct_mask": np.array([]),
             "image": np.array([]),
-            "ref_image_series_uid":None
+            "ref_image_series_uid": None
         }
 
-        self.check_the_dicom(dicomrt_data)
-        dbg=True
-        if dbg:
+        # 3. Check Data
+        if not self.check_the_dicom(dicomrt_data):
+            # If check fails, stop here (text_box already updated)
             return
-        # Close/Hide current window
-        self.accept() # Standard way to close a dialog successfully
 
-        # Open the next window
-        self.next_window = ProcessingWindow()
-        self.next_window.exec()
+        # 4. Navigate
+        self.hide() # Hide this window instead of closing it
+
+        self.next_window = ProcessingWindow(dicomrt_data)
+
+        # exec() blocks until the dialog closes
+        result = self.next_window.exec()
+
+        if result == QDialog.DialogCode.Rejected:
+            # User clicked "Back" (or X), so we show this window again
+            self.show()
+        elif result == QDialog.DialogCode.Accepted:
+            # User clicked "Process" (Finished), so we accept this window too
+            self.accept()
+
+    def resizeEvent(self, event):
+        if hasattr(self, 'btn_next'):
+            new_width = int(self.width() * 0.25)
+            self.btn_next.setFixedWidth(new_width)
+        super().resizeEvent(event)
 
 if __name__ == "__main__":
     copy_custom_ui_icons()
     app = QApplication(sys.argv)
 
-    # --- Apply Napari Theme (Standalone) ---
     if NAPARI_AVAILABLE:
-        # get_theme('dark') ensures the 'dark' theme resources are built
-        # and search paths (theme_dark:/) are registered with Qt.
         customize_stylesheet(app)
-
 
     window = SelectionDialog()
     window.show()
