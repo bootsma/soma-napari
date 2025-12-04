@@ -1,9 +1,11 @@
 import sys
+import os
 import numpy as np
 import pydicom
 from typing import TypedDict, List, Dict
 
-from PyQt6 import QtCore
+from PyQt6.QtGui import QPalette, QColor, QPixmap, QImage
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QFileDialog, QWidget, QTextEdit,
@@ -72,7 +74,7 @@ class ProcessingWindow(QDialog):
     def __init__(self, dicom_data: DICOMRTStructData, filter_config: dict = None):
         super().__init__()
         self.setWindowTitle("ROI Assignment")
-        self.resize(800, 600)
+        self.resize(900, 600) # Slightly wider for image preview
 
         self.dicom_data = dicom_data
         self.filter_config = filter_config or DEFAULT_ROI_FILTER
@@ -82,6 +84,7 @@ class ProcessingWindow(QDialog):
 
         self.setup_ui()
         self.load_patient_data()
+        self.load_preview_image()
         self.populate_table()
 
     def setup_ui(self):
@@ -89,9 +92,11 @@ class ProcessingWindow(QDialog):
 
         # --- 1. Patient Information Group ---
         self.info_group = QGroupBox("Patient Information")
-        self.info_layout = QFormLayout()
+        # Main layout for group is Horizontal: Text on Left, Image on Right
+        group_layout = QHBoxLayout()
 
-        # Labels for data (to be populated later)
+        # Left Side: Text Info
+        self.info_layout = QFormLayout()
         self.lbl_name = QLabel("Loading...")
         self.lbl_id = QLabel("Loading...")
         self.lbl_date = QLabel("Loading...")
@@ -100,15 +105,30 @@ class ProcessingWindow(QDialog):
         self.info_layout.addRow("Patient ID:", self.lbl_id)
         self.info_layout.addRow("Study Date:", self.lbl_date)
 
-        self.info_group.setLayout(self.info_layout)
+        # Right Side: Image Preview
+        self.lbl_image_preview = QLabel("No Preview")
+        self.lbl_image_preview.setFixedSize(150, 150)
+        self.lbl_image_preview.setStyleSheet("border: 1px solid #555; background-color: #000;")
+        self.lbl_image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Add to group layout
+        group_layout.addLayout(self.info_layout, stretch=1)
+        group_layout.addWidget(self.lbl_image_preview)
+
+        self.info_group.setLayout(group_layout)
         layout.addWidget(self.info_group)
 
         # --- 2. ROI Mapping Table ---
         self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Target Structure", "DICOM Contour"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnCount(3) # Increased to 3 columns
+        self.table.setHorizontalHeaderLabels(["ID", "Target Structure", "DICOM Contour"])
+
+        # Header resizing
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) # ID
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Target
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)          # Combo
+
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         layout.addWidget(self.table)
 
@@ -117,11 +137,11 @@ class ProcessingWindow(QDialog):
 
         self.btn_back = QPushButton("Back")
         self.btn_back.setFixedWidth(100)
-        self.btn_back.clicked.connect(self.reject) # Reject closes dialog with "Rejected" code
+        self.btn_back.clicked.connect(self.reject)
 
         self.btn_process = QPushButton("Process")
         self.btn_process.setFixedWidth(100)
-        self.btn_process.clicked.connect(self.accept) # Accept closes dialog with "Accepted" code
+        self.btn_process.clicked.connect(self.accept)
 
         btn_layout.addWidget(self.btn_back)
         btn_layout.addStretch()
@@ -137,16 +157,13 @@ class ProcessingWindow(QDialog):
             return
 
         try:
-            # Read only header data, stop before pixel data (though RTStructs often don't have pixel data)
             ds = pydicom.dcmread(path, stop_before_pixels=True)
 
-            # Helper to safely get string
             def get_val(tag, default="N/A"):
                 val = getattr(ds, tag, default)
                 return str(val) if val else default
 
             name = get_val('PatientName')
-            # Format name nicely if possible (Doe^John -> John Doe)
             if '^' in name:
                 parts = name.split('^')
                 name = f"{parts[1]} {parts[0]}" if len(parts) > 1 else parts[0]
@@ -155,7 +172,6 @@ class ProcessingWindow(QDialog):
             self.lbl_id.setText(get_val('PatientID'))
 
             date = get_val('StudyDate')
-            # Simple date formatting YYYYMMDD -> YYYY-MM-DD
             if len(date) == 8:
                 date = f"{date[0:4]}-{date[4:6]}-{date[6:8]}"
             self.lbl_date.setText(date)
@@ -163,6 +179,56 @@ class ProcessingWindow(QDialog):
         except Exception as e:
             self.lbl_name.setText("Error reading DICOM")
             print(f"Error reading patient info: {e}")
+
+    def load_preview_image(self):
+        """Loads a middle slice from the DICOM image directory and displays it."""
+        image_dir = self.dicom_data.get('dicom_image_set_dir')
+        if not image_dir or not os.path.exists(image_dir):
+            return
+
+        try:
+            # 1. Find DICOM files
+            files = [f for f in os.listdir(image_dir) if f.lower().endswith('.dcm')]
+            if not files:
+                self.lbl_image_preview.setText("No DICOMs")
+                return
+
+            # 2. Pick middle slice (naive sort by filename usually works for simple cases)
+            files.sort()
+            mid_idx = len(files) // 2
+            dicom_path = os.path.join(image_dir, files[mid_idx])
+
+            # 3. Read and Normalize
+            ds = pydicom.dcmread(dicom_path)
+            if not hasattr(ds, 'pixel_array'):
+                self.lbl_image_preview.setText("No Pixels")
+                return
+
+            arr = ds.pixel_array.astype(float)
+
+            # Simple min/max normalization for display
+            # (Note: For medical accuracy, window/level logic is preferred,
+            # but min/max is sufficient for a "thumbnail" preview)
+            arr = (arr - arr.min()) / (arr.max() - arr.min()) * 255
+            arr = arr.astype(np.uint8)
+
+            # 4. Convert to QImage
+            height, width = arr.shape
+            bytes_per_line = width
+            # Format_Grayscale8 is ideal for medical images
+            q_img = QImage(arr.data, width, height, bytes_per_line, QImage.Format.Format_Grayscale8)
+
+            # 5. Set to Label (scaled to fit)
+            pixmap = QPixmap.fromImage(q_img)
+            self.lbl_image_preview.setPixmap(pixmap.scaled(
+                self.lbl_image_preview.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
+
+        except Exception as e:
+            print(f"Error loading preview: {e}")
+            self.lbl_image_preview.setText("Preview Error")
 
     def populate_table(self):
         """Creates table rows based on the filter config."""
@@ -175,12 +241,18 @@ class ProcessingWindow(QDialog):
         options = ["(Unassigned)"] + self.available_rois
 
         for row, target in enumerate(targets):
-            # Column 0: Target Name
-            name_item = QTableWidgetItem(target.get('name', 'Unknown'))
-            name_item.setFlags(name_item.flags() ^ QtCore.Qt.ItemFlag.ItemIsEditable) # Read-only
-            self.table.setItem(row, 0, name_item)
+            # Column 0: Index ID
+            idx_item = QTableWidgetItem(str(target.get('index', 'N/A')))
+            idx_item.setFlags(idx_item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+            idx_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, 0, idx_item)
 
-            # Column 1: ComboBox
+            # Column 1: Target Name
+            name_item = QTableWidgetItem(target.get('name', 'Unknown'))
+            name_item.setFlags(name_item.flags() ^ Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(row, 1, name_item)
+
+            # Column 2: ComboBox
             combo = QComboBox()
             combo.addItems(options)
 
@@ -188,16 +260,13 @@ class ProcessingWindow(QDialog):
             best_match = "(Unassigned)"
             include_keys = target.get('include_keys', [])
 
-            # Search available ROIs for keywords
             for roi in self.available_rois:
                 roi_lower = roi.lower()
-                # Check for exact matches inside the ROI name
                 if any(k.lower() in roi_lower for k in include_keys):
-                    # Basic exclusion check
                     global_exclude = self.filter_config.get('global_exclude', [])
                     if not any(ex.lower() in roi_lower for ex in global_exclude):
                         best_match = roi
-                        break # Stop at first match
+                        break
 
             combo.setCurrentText(best_match)
 
@@ -205,43 +274,33 @@ class ProcessingWindow(QDialog):
             self.current_assignments.append(best_match)
             self.combo_refs.append(combo)
 
-            # Connect signal using a closure to capture the row index
-            # We use lambda row=row: ... to capture the value of row immediately
             combo.currentTextChanged.connect(lambda text, r=row: self.on_combo_changed(r, text))
 
-            self.table.setCellWidget(row, 1, combo)
+            self.table.setCellWidget(row, 2, combo)
 
     def on_combo_changed(self, changed_row, new_text):
-        """
-        Handles smart swapping.
-        If 'new_text' is already selected in another row, swap the values.
-        """
+        """Handles smart swapping."""
         if new_text == "(Unassigned)":
             self.current_assignments[changed_row] = new_text
             return
 
         old_text = self.current_assignments[changed_row]
 
-        # Check if new_text is used elsewhere
         for other_row, assigned_text in enumerate(self.current_assignments):
             if other_row == changed_row:
                 continue
 
             if assigned_text == new_text:
-                # Found a collision! Perform Swap.
-
-                # Update internal state first to prevent recursion logic issues
+                # Collision detected: Swap
                 self.current_assignments[changed_row] = new_text
                 self.current_assignments[other_row] = old_text
 
-                # Block signals to update the UI without triggering this function again
                 other_combo = self.combo_refs[other_row]
                 other_combo.blockSignals(True)
                 other_combo.setCurrentText(old_text)
                 other_combo.blockSignals(False)
                 return
 
-        # No collision, just update state
         self.current_assignments[changed_row] = new_text
 
 
@@ -258,7 +317,7 @@ class SelectionDialog(QDialog):
         self.row1_layout = QHBoxLayout()
 
         self.lbl_file = QLabel("DICOM File:")
-        self.lbl_file.setFixedWidth(80) # Fixed width for alignment
+        self.lbl_file.setFixedWidth(80)
 
         self.txt_file_path = QLineEdit()
         self.txt_file_path.setPlaceholderText("Select a .dcm file...")
@@ -288,7 +347,7 @@ class SelectionDialog(QDialog):
 
         # --- Row 3: Next Button ---
         self.row3_layout = QHBoxLayout()
-        self.row3_layout.addStretch() # Pushes button to the right
+        self.row3_layout.addStretch()
 
         self.btn_next = QPushButton("Next")
         self.btn_next.clicked.connect(self.open_next_window)
@@ -300,7 +359,6 @@ class SelectionDialog(QDialog):
         self.row4_layout = QHBoxLayout()
         self.text_box = QPlainTextEdit()
 
-        # Manually styling for dark mode compatibility if Napari theme misses it
         self.text_box.setStyleSheet(f"""
             QPlainTextEdit {{
                 background-color: #000000;
@@ -374,7 +432,6 @@ class SelectionDialog(QDialog):
     def open_next_window(self):
         """
         Validates inputs, hides current window, and opens the Processing Window.
-        Handles 'Back' navigation by showing this window again if the next one returns 'Rejected'.
         """
         # 1. Validation
         if not self.txt_file_path.text() or not self.txt_dir_path.text():
@@ -394,22 +451,16 @@ class SelectionDialog(QDialog):
 
         # 3. Check Data
         if not self.check_the_dicom(dicomrt_data):
-            # If check fails, stop here (text_box already updated)
             return
 
         # 4. Navigate
-        self.hide() # Hide this window instead of closing it
-
+        self.hide()
         self.next_window = ProcessingWindow(dicomrt_data)
-
-        # exec() blocks until the dialog closes
         result = self.next_window.exec()
 
         if result == QDialog.DialogCode.Rejected:
-            # User clicked "Back" (or X), so we show this window again
             self.show()
         elif result == QDialog.DialogCode.Accepted:
-            # User clicked "Process" (Finished), so we accept this window too
             self.accept()
 
     def resizeEvent(self, event):
