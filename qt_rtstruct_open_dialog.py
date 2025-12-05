@@ -1,21 +1,29 @@
+import logging
+
+
 import sys
 import os
+import time
+
+from mira_core.dicom_utils import get_ref_image_series_uid, get_unique_series_uids, get_rtstruct_roi_names
+from mira_core.contour import RtStructCombinedMaskLoader
+from pydicom.errors import InvalidDicomError
+
 import numpy as np
 import pydicom
 from typing import TypedDict, List, Dict
 
+
 from PyQt6.QtGui import QPalette, QColor, QPixmap, QImage
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import ( Qt, QObject, QThread, pyqtSignal)
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QPushButton, QFileDialog, QWidget, QTextEdit,
     QPlainTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
-    QMessageBox
+    QMessageBox, QProgressBar
 )
 
-from mira_core.dicom_utils import get_ref_image_series_uid, get_unique_series_uids, get_rtstruct_roi_names
-from pydicom.errors import InvalidDicomError
-
+from mira_core.volume_info import VolumeInformation
 from qt_theme_utils import (
     copy_custom_ui_icons, customize_stylesheet,
     make_button, NAPARI_AVAILABLE
@@ -36,8 +44,13 @@ class DICOMRTStructData(TypedDict):
     dicom_image_set_dir: str
     ref_image_series_uid: str
     roi_list: list
-    struct_mask: np.ndarray
-    image: np.ndarray
+
+class DicomVolumeData(TypedDict):
+    image_info: VolumeInformation
+    image_data: np.ndarray
+    mask_data: np.ndarray
+    warnings: str
+    error: str
 
 DEFAULT_ROI_FILTER ={
     'filter_name':'GynSegmentation',
@@ -67,22 +80,59 @@ DEFAULT_ROI_FILTER ={
     'global_exclude':['fake', 'inside']
 }
 
+class ReadStructureDataWorker(QObject):
+    finished = pyqtSignal()
+    progress = pyqtSignal(int)
+
+
+    def __init__(self, requested_dicom_data: DICOMRTStructData, roi_index_map:dict ):
+        super().__init__()
+        self.requested = requested_dicom_data
+        self.loaded_data = DicomVolumeData()
+        self.roi_index_map = roi_index_map
+        self.logger = logging.getLogger(__name__)
+
+    def run(self):
+        try:
+            start = time.perf_counter()
+            self.logger.info("Loading image data")
+            image_info, image_data= VolumeInformation.get_volume_info_and_array(self.requested["dicom_rtstruct_file"],self.requested["dicom_image_set_dir"] )
+            self.loaded_data["image_info"]=image_info
+            self.loaded_data["image_data"]=image_data
+            end =time.perf_counter()
+            self.logger.info(f"Image Load took {end-start} seconds.")
+            mask_data = RtStructCombinedMaskLoader(image_info, self.requested["dicom_rtstruct_file"],
+                                                        self.roi_index_map,progress_callback=self.progress.emit)
+            self.loaded_data["mask_data"] =mask_data
+            end_mask = time.perf_counter()
+            self.logger.info(f"Mask Load took {end_mask-end} seconds.")
+        except Exception as e:
+            msg = f"Failed to load data from {self.requested['dicom_rtstruct_file']}: {str(e)}"
+            self.loaded_data["error"]=msg
+        finally:
+            self.finished.emit()
+
 class ProcessingWindow(QDialog):
     """
     Step 2: ROI Mapping and Metadata Verification.
     """
     def __init__(self, dicom_data: DICOMRTStructData, filter_config: dict = None):
         super().__init__()
-        self.setWindowTitle("ROI Assignment")
-        self.resize(900, 600) # Slightly wider for image preview
+        self.setWindowTitle("ROI Segmentation Assignment")
+        self.resize(400, 400) # Slightly wider for image preview
 
         self.dicom_data = dicom_data
+        self.processed_data = None
         self.filter_config = filter_config or DEFAULT_ROI_FILTER
         self.available_rois = sorted(dicom_data.get('roi_list', []))
         self.combo_refs: List[QComboBox] = []
         self.current_assignments: List[str] = [] # Tracks text in each row to enable swapping
 
         self.setup_ui()
+        # Thread management
+        self.thread = None
+        self.worker = None
+
         self.load_patient_data()
         self.load_preview_image()
         self.populate_table()
@@ -92,28 +142,34 @@ class ProcessingWindow(QDialog):
 
         # --- 1. Patient Information Group ---
         self.info_group = QGroupBox("Patient Information")
-        # Main layout for group is Horizontal: Text on Left, Image on Right
+        # Main layout for group is Horizontal: Image on Left, Text on Right
         group_layout = QHBoxLayout()
 
-        # Left Side: Text Info
-        self.info_layout = QFormLayout()
-        self.lbl_name = QLabel("Loading...")
-        self.lbl_id = QLabel("Loading...")
-        self.lbl_date = QLabel("Loading...")
-
-        self.info_layout.addRow("Patient Name:", self.lbl_name)
-        self.info_layout.addRow("Patient ID:", self.lbl_id)
-        self.info_layout.addRow("Study Date:", self.lbl_date)
-
-        # Right Side: Image Preview
+        # Left Side: Image Preview
         self.lbl_image_preview = QLabel("No Preview")
         self.lbl_image_preview.setFixedSize(150, 150)
         self.lbl_image_preview.setStyleSheet("border: 1px solid #555; background-color: #000;")
         self.lbl_image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Add to group layout
-        group_layout.addLayout(self.info_layout, stretch=1)
+        # Right Side: Text Info
+        self.info_layout = QFormLayout()
+        self.lbl_name = QLabel("Loading...")
+        self.lbl_id = QLabel("Loading...")
+        self.lbl_date = QLabel("Loading...")
+        self.lbl_modality = QLabel("Loading...")
+        self.lbl_dims = QLabel("Loading...")
+        self.lbl_proc_desc = QLabel("Loading...")
+
+        self.info_layout.addRow("Patient Name:", self.lbl_name)
+        self.info_layout.addRow("Patient ID:", self.lbl_id)
+        self.info_layout.addRow("Study Date:", self.lbl_date)
+        self.info_layout.addRow("Modality:", self.lbl_modality)
+        self.info_layout.addRow("Volume Size:", self.lbl_dims)
+        self.info_layout.addRow("Procedure:", self.lbl_proc_desc)
+
+        # Add to group layout (Image first for Left side)
         group_layout.addWidget(self.lbl_image_preview)
+        group_layout.addLayout(self.info_layout, stretch=1)
 
         self.info_group.setLayout(group_layout)
         layout.addWidget(self.info_group)
@@ -122,15 +178,23 @@ class ProcessingWindow(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(3) # Increased to 3 columns
         self.table.setHorizontalHeaderLabels(["ID", "Target Structure", "DICOM Contour"])
+        self.table.verticalHeader().setVisible(False)
+        #self.table.setFixedHeight(100)
 
         # Header resizing
         header = self.table.horizontalHeader()
+
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) # ID
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Target
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)          # Combo
 
         self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         layout.addWidget(self.table)
+
+        self.pbar = QProgressBar()
+        self.pbar.setValue(0)
+        self.pbar.setVisible(False)
+        layout.addWidget(self.pbar)
 
         # --- 3. Action Buttons ---
         btn_layout = QHBoxLayout()
@@ -141,7 +205,7 @@ class ProcessingWindow(QDialog):
 
         self.btn_process = QPushButton("Process")
         self.btn_process.setFixedWidth(100)
-        self.btn_process.clicked.connect(self.accept)
+        self.btn_process.clicked.connect(self.process_data)
 
         btn_layout.addWidget(self.btn_back)
         btn_layout.addStretch()
@@ -149,6 +213,69 @@ class ProcessingWindow(QDialog):
 
         layout.addLayout(btn_layout)
         self.setLayout(layout)
+
+    def process_data(self):
+        try:
+            self.pbar.setVisible(True)
+            self.start_task()
+
+        except Exception as e:
+            print(f"Error: {e}")
+
+
+    def start_task(self):
+        # 1. Prepare Data
+
+        roi_index_map, roi_target_map = self.get_roi_assignments()
+
+        # 2. Create a QThread object
+        self.thread = QThread()
+
+        # 3. Create the Worker object
+        self.worker = ReadStructureDataWorker(self.dicom_data, roi_index_map)
+
+        # 4. Move worker to the thread
+        self.worker.moveToThread(self.thread)
+
+        # 5. Connect signals
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+
+        # Connect worker progress to UI updates
+        #self.worker.error.connect(self.display_error)
+        self.worker.progress.connect(self.update_progress)
+        self.worker.finished.connect(self.task_finished)
+
+        # 6. Start the thread
+        self.thread.start()
+
+        # UI updates
+        self.btn_back.setEnabled(False)
+        self.btn_process.setEnabled(False)
+
+
+    def update_progress(self, val):
+
+        self.pbar.setValue(val)
+
+    def display_error(self, message):
+        QMessageBox.critical(self, "DICOM Data Error", message)
+
+
+    def task_finished(self):
+        #self.status_label.setText("Done!")
+        if self.worker.loaded_data.get("error"):
+            print("failed: ", self.worker.loaded_data["error"] )
+            self.display_error(self.worker.loaded_data["error"])
+            self.reject()
+        else:
+            self.processed_data = self.worker.loaded_data
+            self.btn_process.setEnabled(True)
+            self.accept()
+
+
 
     def load_patient_data(self):
         """Reads the DICOM file to extract patient metadata."""
@@ -181,7 +308,7 @@ class ProcessingWindow(QDialog):
             print(f"Error reading patient info: {e}")
 
     def load_preview_image(self):
-        """Loads a middle slice from the DICOM image directory and displays it."""
+        """Loads metadata and a middle slice from the DICOM image directory."""
         image_dir = self.dicom_data.get('dicom_image_set_dir')
         if not image_dir or not os.path.exists(image_dir):
             return
@@ -191,15 +318,32 @@ class ProcessingWindow(QDialog):
             files = [f for f in os.listdir(image_dir) if f.lower().endswith('.dcm')]
             if not files:
                 self.lbl_image_preview.setText("No DICOMs")
+                self.lbl_dims.setText("N/A")
                 return
+
+            # Count slices
+            num_slices = len(files)
 
             # 2. Pick middle slice (naive sort by filename usually works for simple cases)
             files.sort()
-            mid_idx = len(files) // 2
+            mid_idx = num_slices // 2
             dicom_path = os.path.join(image_dir, files[mid_idx])
 
             # 3. Read and Normalize
             ds = pydicom.dcmread(dicom_path)
+
+            # --- Extract Metadata from Image ---
+            rows = ds.get('Rows', 0)
+            cols = ds.get('Columns', 0)
+            self.lbl_dims.setText(f"{rows} x {cols} x {num_slices}")
+
+            modality = ds.get('Modality', 'N/A')
+            self.lbl_modality.setText(str(modality))
+
+            proc_desc = ds.get('RequestedProcedureDescription', 'N/A')
+            self.lbl_proc_desc.setText(str(proc_desc))
+            # -----------------------------------
+
             if not hasattr(ds, 'pixel_array'):
                 self.lbl_image_preview.setText("No Pixels")
                 return
@@ -207,15 +351,12 @@ class ProcessingWindow(QDialog):
             arr = ds.pixel_array.astype(float)
 
             # Simple min/max normalization for display
-            # (Note: For medical accuracy, window/level logic is preferred,
-            # but min/max is sufficient for a "thumbnail" preview)
             arr = (arr - arr.min()) / (arr.max() - arr.min()) * 255
             arr = arr.astype(np.uint8)
 
             # 4. Convert to QImage
             height, width = arr.shape
             bytes_per_line = width
-            # Format_Grayscale8 is ideal for medical images
             q_img = QImage(arr.data, width, height, bytes_per_line, QImage.Format.Format_Grayscale8)
 
             # 5. Set to Label (scaled to fit)
@@ -302,6 +443,45 @@ class ProcessingWindow(QDialog):
                 return
 
         self.current_assignments[changed_row] = new_text
+
+    def get_roi_assignments(self):
+        """
+        Extracts the current mappings from the table.
+
+        Returns:
+            tuple: (roi_to_index, roi_to_target)
+                - roi_to_index: Dict[str, int] -> {'DICOM_ROI_Name': Index_ID}
+                - roi_to_target: Dict[str, str] -> {'DICOM_ROI_Name': 'Target_Structure_Name'}
+        """
+        roi_to_index = {}
+        roi_to_target = {}
+
+        for row in range(self.table.rowCount()):
+            # 1. Get Selected ROI Name (from ComboBox in Column 2)
+            combo = self.table.cellWidget(row, 2)
+            selected_roi = combo.currentText()
+
+            # Skip unassigned rows
+            if selected_roi == "(Unassigned)":
+                continue
+
+            # 2. Get Index ID (from Column 0)
+            index_item = self.table.item(row, 0)
+            try:
+                # Convert to int, or keep as string if you prefer
+                index_val = int(index_item.text())
+            except ValueError:
+                index_val = index_item.text()
+
+            # 3. Get Target Structure Name (from Column 1)
+            target_item = self.table.item(row, 1)
+            target_name = target_item.text()
+
+            # 4. Populate Dictionaries
+            roi_to_index[selected_roi] = index_val
+            roi_to_target[selected_roi] = target_name
+
+        return roi_to_index, roi_to_target
 
 
 class SelectionDialog(QDialog):
@@ -461,6 +641,7 @@ class SelectionDialog(QDialog):
         if result == QDialog.DialogCode.Rejected:
             self.show()
         elif result == QDialog.DialogCode.Accepted:
+            self.processed_data = self.next_window.processed_data
             self.accept()
 
     def resizeEvent(self, event):
@@ -469,10 +650,49 @@ class SelectionDialog(QDialog):
             self.btn_next.setFixedWidth(new_width)
         super().resizeEvent(event)
 
+def setup_default_logging(log_file='app.log'):
+    """
+    Sets up a robust logging configuration that logs all messages (DEBUG and above)
+    to both a file and the console.
+    """
+    # 1. Define the Logger (root logger)
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG) # Sets the lowest severity level to handle
+
+    # Ensure no handlers from previous configurations persist
+    if logger.handlers:
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+
+    # 2. Define the Formatter
+    # The format includes: Timestamp, Log Level, Logger Name, File/Line, Message
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(name)s - (%(filename)s:%(lineno)d) - %(message)s'
+    )
+
+    # --- Setup Handlers ---
+
+    # 3. File Handler: Logs all messages (DEBUG and above) to a file
+    # 'a' mode means append
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # 4. Stream Handler: Logs all messages (DEBUG and above) to the console
+    # Use sys.stdout for console output
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.DEBUG)
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    print(f"Logging configured. Messages DEBUG and above will be written to the console and '{os.path.abspath(log_file)}'.")
+
 if __name__ == "__main__":
+    setup_default_logging()
     copy_custom_ui_icons()
     app = QApplication(sys.argv)
-
+    NAPARI_AVAILABLE=False
     if NAPARI_AVAILABLE:
         customize_stylesheet(app)
 

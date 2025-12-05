@@ -557,7 +557,9 @@ class MedicalMainWindow(QMainWindow):
 
         for checker in self.status_checkers:
             checker.close_terminate()
-            checker.wait()3
+            checker.wait()
+
+        for v in self.viewers:
             v.close()
         super().closeEvent(event)
 

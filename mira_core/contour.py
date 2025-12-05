@@ -1,23 +1,68 @@
 import logging
+import time
 from typing import List, Tuple, Union
 
+
+#todo move includes into functions so dependencies are hidden if a user only wants to use say rasterio for mask gen
 import cv2
 import numpy as np
 import pydicom
 import rasterio
 import SimpleITK as sitk
-from matplotlib.path import Path
+
 from numpy.typing import NDArray
 from PIL import Image, ImageDraw
 from rasterio.features import geometry_mask
 from scipy.interpolate import splev, splprep
-from shapely.geometry import Polygon
 from skimage.draw import polygon
+from matplotlib.path import Path
+from shapely.geometry import Polygon
 
-from mira.data.volume_info import SITK_ARRAY_INDICES, SITK_ARRAY_TYPE, SITK_IMAGE_INDICES, Unit, UnitConverter, VolumeAxis, VolumeIndexType, VolumeIndices, VolumeInformation
-from mira.image_util.dicom_utils import get_rtstruct_contour_roi_names
-from mira.image_util.mask_interpolation import itkMorphologicalMaskInterpolator
-from mira.image_util.volume_interpolation import VolumeResize
+from mira_core.volume_info import SITK_ARRAY_INDICES, SITK_ARRAY_TYPE, SITK_IMAGE_INDICES, Unit, UnitConverter, VolumeAxis, VolumeIndexType, VolumeIndices, VolumeInformation
+from mira_core.dicom_utils import get_rtstruct_contour_roi_names
+from mira_core.mask_interpolation import itkMorphologicalMaskInterpolator
+from mira_core.volume_interpolation import VolumeResize
+
+# serial version of loader
+def RtStructCombinedMaskLoader( ref_image_info: VolumeInformation,
+                                rtstruct_dicom_data: Union[str, pydicom.dataset.FileDataset],
+                                roi_index_map: dict,
+                                VolumeOrder:VolumeIndexType=SITK_ARRAY_TYPE,
+                                progress_callback=None) -> np.ndarray:
+
+    logger = logging.getLogger(__name__)
+    start = time.perf_counter()
+
+    if isinstance(rtstruct_dicom_data, str):
+        rtstruct_dicom_data = pydicom.dcmread(rtstruct_dicom_data)
+
+    logger.info(f"Loading {len(roi_index_map)} ROIs...")
+    n_rois = len(roi_index_map)
+    mask = ref_image_info.get_empty_numpy_array(VolumeOrder, np.int8)
+    count = 1
+
+    reverse_lookup = {}
+    for roi_name, index in roi_index_map.items():
+        reverse_lookup[index]=roi_name
+        logger.info(f"Loading {roi_name}")
+        contour = Contour.from_rtstruct(ref_image_info, rtstruct_dicom_data, roi_name)
+        curr, m_info = contour.get_mask()
+        if mask[curr].max() > 0:
+            region = mask[curr]
+            region = region[region>0]
+            overlapping_label_indices = np.unique(region)
+            labels = []
+            for index in overlapping_label_indices:
+                labels.append(reverse_lookup[index])
+            logger.warning(f"Overlapping contours for {roi_name} with contours: {labels}")
+
+        mask = np.logical_or(mask, curr.astype(np.int8)*index)
+        if progress_callback:
+            progress_callback(int(count/n_rois*100))
+            count+=1
+    end = time.perf_counter()
+    logger.info(f"Load took {end-start} seconds.")
+    return mask
 
 
 class Contour:

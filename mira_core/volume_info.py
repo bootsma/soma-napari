@@ -6,7 +6,7 @@ import itk
 import numpy as np
 import SimpleITK as sitk
 
-from dicom_utils import get_ref_image_series_uid, get_series_image_info, load_dicom_image, load_dicom_images
+from mira_core.dicom_utils import get_ref_image_series_uid, get_series_image_info, load_dicom_images
 
 
 def convert_itk_to_sitk(itk_image):
