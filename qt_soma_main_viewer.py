@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 import napari
-from PyQt6.QtWidgets import QLabel
+from PyQt6.QtWidgets import QLabel, QDialog
 from napari.layers import Labels, Image
 
 from napari._qt.dialogs.qt_activity_dialog import QtActivityDialog
@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Qt
 
 from qt_label_info_widget import LabelInfoWidget
+from qt_rtstruct_open_dialog import ReadRTDicomDialog
 from qt_theme_utils import copy_custom_ui_icons, customize_stylesheet
 
 # --- Import your custom buttons if available ---
@@ -166,11 +167,17 @@ class MedicalMainWindow(QMainWindow):
 
         # -- File Menu --
         file_menu = menubar.addMenu("File")
-
+        """
         open_action = QAction("Open File(s)...", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._open_files_dialog)
         file_menu.addAction(open_action)
+        """
+        open_action = QAction("Open RT Dicom File...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._open_rtdicom_file)
+        file_menu.addAction(open_action)
+
 
         exit_action = QAction("Exit", self)
         exit_action.setShortcut("Ctrl+Q")
@@ -190,6 +197,29 @@ class MedicalMainWindow(QMainWindow):
             # Open in the Master (Axial) viewer.
             # The Sync logic will automatically propagate layers to the others.
             self.v_axial.open(file_paths)
+
+    def _open_rtdicom_file(self):
+        dlg = ReadRTDicomDialog()
+        if dlg.exec_() == QDialog.Accepted:
+            data = dlg.processed_data
+            # 1. Update ONLY the Master (Axial) viewer.
+            # Your _link_viewers_layer_list logic will automatically
+            # propagate these changes to Coronal, Sagittal, and 3D.
+            self.v_axial.layers.clear()
+
+            # 2. Add the new data to the Master viewer
+            self.v_axial.add_image(data["image_data"], name="Image", colormap="gray")
+            self.v_axial.add_labels(data["mask_data"], name="DICOM Structures", opacity=0.6)
+
+            # 3. CRITICAL: Reset cameras.
+            # If the new DICOM has different dimensions (e.g., 512x512 vs 128x128),
+            # the old camera position might be looking at "nothing".
+            self._reset_all_cameras()
+            self._setup_camera_orientations()
+
+            print("Loaded and synced successfully!")
+            print("loaded that shit!")
+
 
     def _reset_all_cameras(self):
         for v in self.viewers:
@@ -295,7 +325,8 @@ class MedicalMainWindow(QMainWindow):
 
     def _create_and_add_data(self):
         dims = (128, 128, 128)
-        image_vol = np.random.rand(*dims).astype(np.float32)
+        #image_vol = np.random.rand(*dims).astype(np.uint16)
+        image_vol = np.random.randint(0,1024, size=dims).astype(np.uint16)
         label_vol = np.zeros(dims, dtype=np.int32)
 
         # Define some label indices
@@ -311,7 +342,7 @@ class MedicalMainWindow(QMainWindow):
         }
 
         for v in self.viewers:
-            v.add_image(image_vol, name="Volume", colormap="gray", contrast_limits=[0, 1])
+            v.add_image(image_vol, name="Volume", colormap="gray", contrast_limits=[0, 1024])
 
             # Add labels with properties
             lbl_layer = v.add_labels(

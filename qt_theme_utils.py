@@ -57,12 +57,30 @@ def customize_stylesheet(app):
     # Note: We use the prefix 'theme_dark:' which now contains your copied file
     my_buttons = ("\n\nQtViewerPushButton[mode=\"coordinate_axes\"] { "
                   "\n    image: url(\"theme_dark:/coordinate_axes.svg\");"
+                  "\n}\n"
+                  "\n\nQtViewerPushButton[mode=\"folder\"] { "
+                  "\n    image: url(\"theme_dark:/folder.svg\");"
                   "\n}\n")
     stylesheet += my_buttons
 
     app.setStyleSheet(stylesheet)
 
 
+def get_icon_cache(theme_id=None):
+    from napari.utils.theme import get_theme
+    from napari._qt.qt_resources import get_stylesheet
+    from qtpy.QtCore import QDir
+    import os
+    import shutil
+    if not theme_id:
+        theme_id = "dark"
+
+    theme = get_theme(theme_id)
+
+    resource_prefix = f'theme_{theme_id}'
+    search_paths = QDir.searchPaths(resource_prefix)
+    print(f'ICON FOLDER: {search_paths}')
+    return search_paths
 
 def customize_ui_old(app):
 

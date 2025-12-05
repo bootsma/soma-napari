@@ -55,13 +55,14 @@ def RtStructCombinedMaskLoader( ref_image_info: VolumeInformation,
             for index in overlapping_label_indices:
                 labels.append(reverse_lookup[index])
             logger.warning(f"Overlapping contours for {roi_name} with contours: {labels}")
-
-        mask = np.logical_or(mask, curr.astype(np.int8)*index)
+        print(f"Adding {roi_name} with label index: {index}, voxels: {np.sum(curr.astype(np.int8))}")
+        mask[curr] = index
         if progress_callback:
             progress_callback(int(count/n_rois*100))
             count+=1
     end = time.perf_counter()
     logger.info(f"Load took {end-start} seconds.")
+    print(f"Unique data in mask: {np.unique(mask)}")
     return mask
 
 

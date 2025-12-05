@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 from mira_core.volume_info import VolumeInformation
 from qt_theme_utils import (
     copy_custom_ui_icons, customize_stylesheet,
-    make_button, NAPARI_AVAILABLE
+    make_button, NAPARI_AVAILABLE, get_icon_cache
 )
 
 # --- Napari Theme Imports ---
@@ -484,7 +484,7 @@ class ProcessingWindow(QDialog):
         return roi_to_index, roi_to_target
 
 
-class SelectionDialog(QDialog):
+class ReadRTDicomDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Input Selection")
@@ -502,7 +502,8 @@ class SelectionDialog(QDialog):
         self.txt_file_path = QLineEdit()
         self.txt_file_path.setPlaceholderText("Select a .dcm file...")
 
-        self.btn_browse_file = make_button("coordinate_axes",
+        print(get_icon_cache())
+        self.btn_browse_file = make_button("folder",
                                            "Browse for DICOM RT File",
                                            self.browse_dicom_file)
 
@@ -696,7 +697,7 @@ if __name__ == "__main__":
     if NAPARI_AVAILABLE:
         customize_stylesheet(app)
 
-    window = SelectionDialog()
+    window = ReadRTDicomDialog()
     window.show()
 
     sys.exit(app.exec())
