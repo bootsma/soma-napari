@@ -190,6 +190,16 @@ class MedicalMainWindow(QMainWindow):
         reset_action.triggered.connect(self._reset_all_cameras)
         view_menu.addAction(reset_action)
 
+        #--- Process Menu---
+        proc_menu = menubar.addMenu("Process")
+        proc_ai_action = proc_menu.addAction("Send Image Data")
+        proc_ai_action.triggered.connect(self._send_image_data)
+        proc_menu.addAction(proc_ai_action)
+
+
+    def _send_image_data(self):
+        print("Testing processing image")
+
     def _open_files_dialog(self):
         """Opens files using Napari's internal reader."""
         file_paths, _ = QFileDialog.getOpenFileNames(self, "Open Medical Image")
@@ -199,6 +209,7 @@ class MedicalMainWindow(QMainWindow):
             self.v_axial.open(file_paths)
 
     def _open_rtdicom_file(self):
+        #todo fix label index assigned in RtStructCombinedMaskLoader
         dlg = ReadRTDicomDialog()
         if dlg.exec_() == QDialog.Accepted:
             data = dlg.processed_data
