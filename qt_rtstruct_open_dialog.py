@@ -548,7 +548,7 @@ class ReadRTDicomDialog(QDialog):
                 border: 1px solid #555555;
             }}
             """
-                                    )
+        )
 
         self.text_box.setReadOnly(True)
         self.text_box.setFixedHeight(100)

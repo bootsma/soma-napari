@@ -52,8 +52,8 @@ def RtStructCombinedMaskLoader( ref_image_info: VolumeInformation,
             region = region[region>0]
             overlapping_label_indices = np.unique(region)
             labels = []
-            for index in overlapping_label_indices:
-                labels.append(reverse_lookup[index])
+            for ind in overlapping_label_indices:
+                labels.append(reverse_lookup[ind])
             logger.warning(f"Overlapping contours for {roi_name} with contours: {labels}")
         print(f"Adding {roi_name} with label index: {index}, voxels: {np.sum(curr.astype(np.int8))}")
         mask[curr] = index
