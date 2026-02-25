@@ -169,6 +169,7 @@ class MedicalMainWindow(QMainWindow):
 
         # -- File Menu --
         file_menu = menubar.addMenu("File")
+        file_menu.setMinimumWidth(200)  # Set minimum width in pixels
         """
         open_action = QAction("Open File(s)...", self)
         open_action.setShortcut("Ctrl+O")
