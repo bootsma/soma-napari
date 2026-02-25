@@ -17,7 +17,9 @@ from qtpy.QtCore import Qt
 
 from qt_label_info_widget import LabelInfoWidget
 from qt_rtstruct_open_dialog import ReadRTDicomDialog
+from qt_inference_dialog import InferenceDialog
 from qt_theme_utils import copy_custom_ui_icons, customize_stylesheet
+import SimpleITK as sitk
 
 # --- Import your custom buttons if available ---
 try:
@@ -198,7 +200,29 @@ class MedicalMainWindow(QMainWindow):
 
 
     def _send_image_data(self):
-        print("Testing processing image")
+        """Opens the Inference Dialog and adds resulting labels to the viewer."""
+        dlg = InferenceDialog(self.v_axial, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            result_sitk = dlg.result_image
+            if result_sitk:
+                # Convert SimpleITK image to numpy array (ZYX)
+                label_data = sitk.GetArrayFromImage(result_sitk)
+                
+                # Use metadata from the source image if possible to match scale/translate
+                source_layer_name = dlg.combo_volume.currentText()
+                source_layer = self.v_axial.layers[source_layer_name]
+                
+                scale = source_layer.scale
+                translate = source_layer.translate
+                
+                self.v_axial.add_labels(
+                    label_data,
+                    name="AI_Segmentation",
+                    scale=scale,
+                    translate=translate,
+                    opacity=0.6
+                )
+                print("AI Segmentation added successfully!")
 
     def _open_files_dialog(self):
         """Opens files using Napari's internal reader."""
@@ -219,7 +243,7 @@ class MedicalMainWindow(QMainWindow):
             self.v_axial.layers.clear()
 
             # 2. Add the new data to the Master viewer
-            self.v_axial.add_image(data["image_data"], name="Image", colormap="gray")
+            self.v_axial.add_image(data["image_data"], name="Image", colormap="gray", metadata={"volume_info": data["image_info"]})
             self.v_axial.add_labels(data["mask_data"], name="DICOM Structures", opacity=0.6)
 
             # 3. CRITICAL: Reset cameras.

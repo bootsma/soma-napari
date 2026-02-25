@@ -496,7 +496,7 @@ class ReadRTDicomDialog(QDialog):
         # --- Row 1: DICOM File Selection ---
         self.row1_layout = QHBoxLayout()
 
-        self.lbl_file = QLabel("DICOM File:")
+        self.lbl_file = QLabel("RTStruct DICOM File:")
         self.lbl_file.setFixedWidth(80)
 
         self.txt_file_path = QLineEdit()
