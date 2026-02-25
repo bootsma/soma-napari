@@ -497,7 +497,7 @@ class ReadRTDicomDialog(QDialog):
         self.row1_layout = QHBoxLayout()
 
         self.lbl_file = QLabel("RTStruct DICOM File:")
-        self.lbl_file.setFixedWidth(80)
+        self.lbl_file.setFixedWidth(120)
 
         self.txt_file_path = QLineEdit()
         self.txt_file_path.setPlaceholderText("Select a .dcm file...")

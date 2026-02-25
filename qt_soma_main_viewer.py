@@ -214,12 +214,14 @@ class MedicalMainWindow(QMainWindow):
                 
                 scale = source_layer.scale
                 translate = source_layer.translate
-                
+                affine = source_layer.affine
+
                 self.v_axial.add_labels(
                     label_data,
                     name="AI_Segmentation",
                     scale=scale,
                     translate=translate,
+                    affine=affine,
                     opacity=0.6
                 )
                 print("AI Segmentation added successfully!")
@@ -243,8 +245,22 @@ class MedicalMainWindow(QMainWindow):
             self.v_axial.layers.clear()
 
             # 2. Add the new data to the Master viewer
-            self.v_axial.add_image(data["image_data"], name="Image", colormap="gray", metadata={"volume_info": data["image_info"]})
-            self.v_axial.add_labels(data["mask_data"], name="DICOM Structures", opacity=0.6)
+            vol_info = data["image_info"]
+            affine = vol_info.get_napari_affine()
+
+            self.v_axial.add_image(
+                data["image_data"],
+                name="Image",
+                colormap="gray",
+                affine=affine,
+                metadata={"volume_info": vol_info}
+            )
+            self.v_axial.add_labels(
+                data["mask_data"],
+                name="DICOM Structures",
+                affine=affine,
+                opacity=0.6
+            )
 
             # 3. CRITICAL: Reset cameras.
             # If the new DICOM has different dimensions (e.g., 512x512 vs 128x128),
@@ -253,7 +269,7 @@ class MedicalMainWindow(QMainWindow):
             self._setup_camera_orientations()
 
             print("Loaded and synced successfully!")
-            print("loaded that shit!")
+
 
 
     def _reset_all_cameras(self):
@@ -388,7 +404,15 @@ class MedicalMainWindow(QMainWindow):
             )
 
     def _setup_camera_orientations(self):
-        center = (64, 64, 64)
+        if len(self.v_axial.layers) > 0:
+            # Calculate the middle point of the first layer in world coordinates
+            layer = self.v_axial.layers[0]
+            extent = layer.extent.world
+            # extent.world is a tuple of (min, max) where each is a coordinate array
+            center = (extent[0] + extent[1]) / 2
+        else:
+            center = (64.0, 64.0, 64.0)
+
         self.v_axial.dims.ndisplay = 2
         self.v_axial.dims.order = (0, 1, 2)
         self.v_axial.dims.set_point(0, center[0])
@@ -419,12 +443,29 @@ class MedicalMainWindow(QMainWindow):
             for v in self.viewers:
                 if v is not source_viewer and layer.name not in v.layers:
                     if isinstance(layer, Labels):
-                        new_l = v.add_labels(layer.data, name=layer.name, opacity=layer.opacity)
+                        new_l = v.add_labels(
+                            layer.data,
+                            name=layer.name,
+                            opacity=layer.opacity,
+                            affine=layer.affine,
+                            scale=layer.scale,
+                            translate=layer.translate,
+                            metadata=layer.metadata
+                        )
                         # IMPORTANT: Link painting for the new layer immediately
                         all_labels = [vv.layers[layer.name] for vv in self.viewers if layer.name in vv.layers]
                         self._link_label_painting(all_labels)
                     elif isinstance(layer, Image):
-                        v.add_image(layer.data, name=layer.name, colormap=layer.colormap.name, blending=layer.blending)
+                        v.add_image(
+                            layer.data,
+                            name=layer.name,
+                            colormap=layer.colormap.name,
+                            blending=layer.blending,
+                            affine=layer.affine,
+                            scale=layer.scale,
+                            translate=layer.translate,
+                            metadata=layer.metadata
+                        )
 
         @self._blk_layer_remove
         def on_remove(event):

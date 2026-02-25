@@ -577,6 +577,49 @@ class VolumeInformation:
     def units(self):
         return self._units
 
+    def get_napari_affine(self):
+        """
+        Returns a 4x4 affine matrix for napari to map ZYX indices (k, j, i)
+        to LPS physical coordinates (Z, Y, X).
+
+        Napari's 'affine' transform maps index coordinates [d0, d1, d2, 1]
+        to world coordinates. For a 3D volume loaded via SimpleITK,
+        d0=k (Z), d1=j (Y), d2=i (X).
+
+        The resulting world coordinates will be [z, y, x] in the DICOM physical space.
+        """
+        r = self._orientation
+        s = self._spacing
+        o = self._origin
+
+        # Initialize 4x4 identity matrix
+        affine = np.eye(4)
+
+        # Column 0: Coefficients for index 'k' (Z-index of array)
+        # In DICOM, the Z-axis of the image is the 3rd column of the orientation matrix.
+        affine[0, 0] = r[2, 2] * s[2]  # z-component
+        affine[1, 0] = r[1, 2] * s[2]  # y-component
+        affine[2, 0] = r[0, 2] * s[2]  # x-component
+
+        # Column 1: Coefficients for index 'j' (Y-index of array)
+        # In DICOM, the Y-axis of the image is the 2nd column of the orientation matrix.
+        affine[0, 1] = r[2, 1] * s[1]
+        affine[1, 1] = r[1, 1] * s[1]
+        affine[2, 1] = r[0, 1] * s[1]
+
+        # Column 2: Coefficients for index 'i' (X-index of array)
+        # In DICOM, the X-axis of the image is the 1st column of the orientation matrix.
+        affine[0, 2] = r[2, 0] * s[0]
+        affine[1, 2] = r[1, 0] * s[0]
+        affine[2, 2] = r[0, 0] * s[0]
+
+        # Column 3: Translation (origin of pixel at [0, 0, 0])
+        affine[0, 3] = o[2]  # oz
+        affine[1, 3] = o[1]  # oy
+        affine[2, 3] = o[0]  # ox
+
+        return affine
+
     def get_config(self):
         return {
             "size": self._size.tolist(),
