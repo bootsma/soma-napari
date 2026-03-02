@@ -1,4 +1,5 @@
 import sys
+import os
 import numpy as np
 import napari
 from PyQt6.QtWidgets import QLabel, QDialog
@@ -17,6 +18,8 @@ from qtpy.QtCore import Qt
 
 from qt_label_info_widget import LabelInfoWidget
 from qt_rtstruct_open_dialog import ReadRTDicomDialog
+from qt_dicom_series_open_dialog import ReadDicomSeriesDialog
+from qt_medical_image_open_dialog import ReadMedicalImageDialog
 from qt_inference_dialog import InferenceDialog
 from qt_theme_utils import copy_custom_ui_icons, customize_stylesheet
 import SimpleITK as sitk
@@ -181,6 +184,15 @@ class MedicalMainWindow(QMainWindow):
         open_action.triggered.connect(self._open_rtdicom_file)
         file_menu.addAction(open_action)
 
+        open_series_action = QAction("Open DICOM Image Series...", self)
+        open_series_action.setShortcut("Ctrl+I")
+        open_series_action.triggered.connect(self._open_dicom_series)
+        file_menu.addAction(open_series_action)
+
+        open_medical_action = QAction("Open Medical Images...", self)
+        open_medical_action.setShortcut("Ctrl+M")
+        open_medical_action.triggered.connect(self._open_medical_images)
+        file_menu.addAction(open_medical_action)
 
         exit_action = QAction("Exit", self)
         exit_action.setShortcut("Ctrl+Q")
@@ -272,6 +284,81 @@ class MedicalMainWindow(QMainWindow):
             print("Loaded and synced successfully!")
 
 
+    def _open_dicom_series(self):
+        """Opens the DICOM Series Selection Dialog and adds resulting images to the viewer."""
+        dlg = ReadDicomSeriesDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            selected_data = dlg.selected_data
+            if not selected_data:
+                return
+
+            # Clear existing layers if requested
+            if dlg.clear_layers_on_load:
+                self.v_axial.layers.clear()
+
+            for data in selected_data:
+                vol_info = data["volume_info"]
+                affine = vol_info.get_napari_affine()
+                series_info = data["series_info"]
+
+                layer_name = f"Image: {series_info['description']}"
+
+                self.v_axial.add_image(
+                    data["image_data"],
+                    name=layer_name,
+                    colormap="gray",
+                    affine=affine,
+                    metadata={"volume_info": vol_info, "series_info": series_info}
+                )
+
+            self._reset_all_cameras()
+            self._setup_camera_orientations()
+            print(f"Loaded {len(selected_data)} DICOM series successfully!")
+
+    def _open_medical_images(self):
+        """Opens the Medical Image Dialog and adds resulting images/segmentations to the viewer."""
+        dlg = ReadMedicalImageDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            selected_data = dlg.selected_data
+            if not selected_data:
+                return
+
+            # Clear existing layers if requested
+            if dlg.clear_layers_on_load:
+                self.v_axial.layers.clear()
+
+            for data in selected_data:
+                vol_info = data["volume_info"]
+                affine = vol_info.get_napari_affine()
+                file_path = data["file_path"]
+                data_type = data["data_type"]
+
+                # Extract filename without extension for layer name
+                filename = os.path.basename(file_path)
+                layer_name = f"{data_type}: {filename}"
+
+                if data_type == "Segmentation":
+                    # Add as labels layer
+                    self.v_axial.add_labels(
+                        data["image_data"],
+                        name=layer_name,
+                        affine=affine,
+                        opacity=0.6,
+                        metadata={"volume_info": vol_info, "file_path": file_path}
+                    )
+                else:
+                    # Add as image layer
+                    self.v_axial.add_image(
+                        data["image_data"],
+                        name=layer_name,
+                        colormap="gray",
+                        affine=affine,
+                        metadata={"volume_info": vol_info, "file_path": file_path}
+                    )
+
+            self._reset_all_cameras()
+            self._setup_camera_orientations()
+            print(f"Loaded {len(selected_data)} medical image(s) successfully!")
 
     def _reset_all_cameras(self):
         for v in self.viewers:

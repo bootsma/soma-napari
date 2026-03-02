@@ -12,6 +12,10 @@ from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
 
+class DicomUtilException(Exception):
+    pass
+
+
 def find_series_uid_for_roi(dicom_path: str, rtstruct_file: Union[str, pydicom.dataset.FileDataset], roi_name):
     logger = logging.getLogger(__name__)
     sop_uids = get_sop_uids_for_roi(rtstruct_file, roi_name)
@@ -142,6 +146,74 @@ def get_unique_series_uids(root_directory):
                 continue
 
     return list(unique_uids)
+
+
+def get_dicom_series_info_dict(root_directory: str):
+    """
+    Scans a directory for DICOM files and returns a dictionary of unique
+    Series info, grouped by a refined UID that accounts for multiple volumes.
+
+    Args:
+        root_directory (str): The path to the directory to search.
+
+    Returns:
+        dict: { refined_uid: { series_info } }
+    """
+    logger = logging.getLogger(__name__)
+    series = {}
+    search_path = Path(root_directory)
+
+    if not search_path.is_dir():
+        raise FileNotFoundError(f"The directory {root_directory} does not exist.")
+
+    for file_path in search_path.rglob('*'):
+        if not file_path.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(str(file_path), stop_before_pixels=True, force=True)
+            if 'SeriesInstanceUID' not in ds:
+                continue
+
+            series_instance_uid = ds.SeriesInstanceUID
+            series_description = getattr(ds, "SeriesDescription", "None")
+            rows = getattr(ds, "Rows", 0)
+            cols = getattr(ds, "Columns", 0)
+            instance_number = int(getattr(ds, "InstanceNumber", 0))
+            patient_id = getattr(ds, "PatientID", "Unknown")
+            slice_thickness = getattr(ds, "SliceThickness", 0)
+            series_number = getattr(ds, "SeriesNumber", "0")
+            sequence_name = getattr(ds, "SequenceName", "None")
+
+            # Handle the case where one series UID has multiple volume sets
+            # This logic is from tmp/dicom_utils.py
+            refine_tags = [slice_thickness, rows, cols, series_number, sequence_name]
+            unique_volume_id = series_instance_uid
+            for tag in refine_tags:
+                unique_volume_id += '_' + str(tag)
+
+            if unique_volume_id not in series:
+                series[unique_volume_id] = {
+                    'series_instance_uid': series_instance_uid,
+                    'patient_id': patient_id,
+                    'description': series_description,
+                    'dimensions': f"{rows} x {cols}",
+                    'num_images': 1,
+                    'file_paths': {instance_number: str(file_path)}
+                }
+            else:
+                series[unique_volume_id]['file_paths'][instance_number] = str(file_path)
+                series[unique_volume_id]['num_images'] += 1
+
+        except Exception as e:
+            # logger.debug(f"Skipping file {file_path}: {e}")
+            continue
+
+    # Sort file paths by instance number and convert to list
+    for key, data in series.items():
+        sorted_instances = sorted(data['file_paths'].keys())
+        data['file_paths'] = [data['file_paths'][i] for i in sorted_instances]
+
+    return series
 
 
 def find_all_uids(dicom_file: Union[str, pydicom.dataset.FileDataset]):

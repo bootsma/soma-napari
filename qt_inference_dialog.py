@@ -216,25 +216,34 @@ class InferenceDialog(QDialog):
 
             # Create sitk.Image
             # SimpleITK is XYZ, Napari is ZYX
-            sitk_img = sitk.GetImageFromArray(data)
-            
-            # Use layer.scale and layer.translate if available
-            # Napari: (sz, sy, sx), SITK: (sx, sy, sz)
-            scale = getattr(layer, 'scale', (1.0, 1.0, 1.0))
-            translate = getattr(layer, 'translate', (0.0, 0.0, 0.0))
-            
-            sitk_img.SetSpacing(np.flip(scale).tolist())
-            sitk_img.SetOrigin(np.flip(translate).tolist())
+
+
+
+
             
             # If we have volume_info in metadata, we can use it for direction
+            sitk_img = None
             if 'volume_info' in layer.metadata:
                 vol_info = layer.metadata['volume_info']
-                sitk_img.SetDirection(vol_info.direction)
+                assert(isinstance(vol_info, VolumeInformation))
+                sitk_img = vol_info.get_sitk_image(data)
+
+            else:
+                logging.warning("No volume_info found in metadata. Using default direction, spacing, and origin.")
+                sitk_img = sitk.GetImageFromArray(data)
+                # Use layer.scale and layer.translate if available
+                # Napari: (sz, sy, sx), SITK: (sx, sy, sz)
+                scale = getattr(layer, 'scale', (1.0, 1.0, 1.0))
+                translate = getattr(layer, 'translate', (0.0, 0.0, 0.0))
+                sitk_img.SetSpacing(np.flip(scale).tolist())
+                sitk_img.SetOrigin(np.flip(translate).tolist())
 
         except Exception as e:
             QMessageBox.critical(self, "Data Conversion Error", f"Failed to convert layer to SimpleITK: {e}")
             return
 
+        #debugging
+        sitk.WriteImage(sitk_img, r"C:\temp\sent_image.nii.gz")
         # 2. Start Worker Thread
         self.pbar.setVisible(True)
         self.pbar.setRange(0, 0) # Indeterminate
