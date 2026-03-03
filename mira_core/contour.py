@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 
 from scipy.interpolate import splev, splprep
 from skimage.draw import polygon
-from shapely.geometry import Polygon
+
 
 from mira_core.volume_info import SITK_ARRAY_INDICES, SITK_ARRAY_TYPE, SITK_IMAGE_INDICES, Unit, UnitConverter, VolumeAxis, VolumeIndexType, VolumeIndices, VolumeInformation
 from mira_core.dicom_utils import get_rtstruct_contour_roi_names
@@ -418,6 +418,7 @@ class Contour:
     def get_slice_mask_from_rasterio(xy_contour: Union[list[tuple], NDArray], image_info: VolumeInformation) -> NDArray[bool]:
         import rasterio
         from rasterio.features import geometry_mask
+        from shapely.geometry import Polygon
 
         transform = rasterio.transform.Affine(1, 0, -0.5, 0, 1, -0.5)
         """
