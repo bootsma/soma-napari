@@ -14,7 +14,6 @@ from PIL import Image, ImageDraw
 
 from scipy.interpolate import splev, splprep
 from skimage.draw import polygon
-from matplotlib.path import Path
 from shapely.geometry import Polygon
 
 from mira_core.volume_info import SITK_ARRAY_INDICES, SITK_ARRAY_TYPE, SITK_IMAGE_INDICES, Unit, UnitConverter, VolumeAxis, VolumeIndexType, VolumeIndices, VolumeInformation
@@ -394,11 +393,13 @@ class Contour:
                 This is uses Matplotlib Path, it results always in a smaller volume as it only considers pixels inside
                 the contour path
                 :param xy_contour: coordinates of contour assumed  to conform to 0,0 is center of pixel and in
-        c        continuous pixel coordinates
+                 continuous pixel coordinates
                 :param image_info: Information about the image to draw the contour on
                 :return: boolean numpy array
 
         """
+
+        from matplotlib.path import Path
         negative_radius = True
         x, y = np.meshgrid(np.arange(int(image_info.nx)), np.arange(int(image_info.ny)))
         x, y = x.flatten(), y.flatten()
