@@ -55,10 +55,12 @@ def customize_stylesheet(app):
     theme = get_theme(theme_id)
     stylesheet = get_stylesheet(theme.id)
 
+
     # Get the Qt resource search paths for the current theme
     resource_prefix = f'theme_{theme_id}'
     search_paths = QDir.searchPaths(resource_prefix)
-
+    print(f"Search paths for {resource_prefix}:{search_paths}")
+    """
     # Get napari's icon directory as fallback
     napari_source_dir = os.path.dirname(napari.__file__)
     napari_icons_path = os.path.join(napari_source_dir, 'resources', 'icons')
@@ -72,6 +74,7 @@ def customize_stylesheet(app):
             search_paths_list.append(custom_icon_dir)
             QDir.setSearchPaths(resource_prefix, search_paths_list)
             print(f"Added {custom_icon_dir} to {resource_prefix} search paths")
+    """
 
     # Append your custom CSS
     # Use theme_dark: prefix which should now find icons in search paths
