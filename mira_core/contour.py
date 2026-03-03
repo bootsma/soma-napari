@@ -4,15 +4,14 @@ from typing import List, Tuple, Union
 
 
 #todo move includes into functions so dependencies are hidden if a user only wants to use say rasterio for mask gen
-import cv2
+
 import numpy as np
 import pydicom
-import rasterio
 import SimpleITK as sitk
 
 from numpy.typing import NDArray
 from PIL import Image, ImageDraw
-from rasterio.features import geometry_mask
+
 from scipy.interpolate import splev, splprep
 from skimage.draw import polygon
 from matplotlib.path import Path
@@ -370,11 +369,14 @@ class Contour:
         """
                 Uses opencv to create a mask image, similar to pil results but it uses the "banker's/engineering rounding"
                 :param xy_contour: coordinates of contour assumed  to conform to 0,0 is center of pixel and in
-        c        continuous pixel coordinates
+                 continuous pixel coordinates
                 :param image_info: Information about the image to draw the contour on
                 :return: boolean numpy array
 
+
         """
+
+        import cv2
         if isinstance(xy_contour, list):
             xy_contour_np = np.zeros([len(xy_contour), 1, 2], dtype=np.int32)
             for i, xy in enumerate(xy_contour):
@@ -413,6 +415,9 @@ class Contour:
 
     @staticmethod
     def get_slice_mask_from_rasterio(xy_contour: Union[list[tuple], NDArray], image_info: VolumeInformation) -> NDArray[bool]:
+        import rasterio
+        from rasterio.features import geometry_mask
+
         transform = rasterio.transform.Affine(1, 0, -0.5, 0, 1, -0.5)
         """
         if we didn't have pixels in continuous pixel index coordinates
