@@ -48,13 +48,33 @@ def copy_custom_ui_icons():
 def customize_stylesheet(app):
     from napari.utils.theme import get_theme
     from napari._qt.qt_resources import get_stylesheet
+    from qtpy.QtCore import QDir
+    import os
 
     theme_id = "dark"
     theme = get_theme(theme_id)
     stylesheet = get_stylesheet(theme.id)
 
+    # Get the Qt resource search paths for the current theme
+    resource_prefix = f'theme_{theme_id}'
+    search_paths = QDir.searchPaths(resource_prefix)
+
+    # Get napari's icon directory as fallback
+    napari_source_dir = os.path.dirname(napari.__file__)
+    napari_icons_path = os.path.join(napari_source_dir, 'resources', 'icons')
+
+    # Try to add custom icon directory to search paths
+    custom_icon_dir = os.path.abspath("icons")
+    if os.path.exists(custom_icon_dir):
+        # Add custom icon directory to Qt resource search paths
+        if custom_icon_dir not in search_paths:
+            search_paths_list = list(search_paths) if search_paths else []
+            search_paths_list.append(custom_icon_dir)
+            QDir.setSearchPaths(resource_prefix, search_paths_list)
+            print(f"Added {custom_icon_dir} to {resource_prefix} search paths")
+
     # Append your custom CSS
-    # Note: We use the prefix 'theme_dark:' which now contains your copied file
+    # Use theme_dark: prefix which should now find icons in search paths
     my_buttons = ("\n\nQtViewerPushButton[mode=\"coordinate_axes\"] { "
                   "\n    image: url(\"theme_dark:/coordinate_axes.svg\");"
                   "\n}\n"
